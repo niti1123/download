@@ -1,0 +1,33 @@
+Linux Commands:
+
+1. clear: clears the terminal
+2. pwd: Directory navigation
+3. ls: Show content in particular folder
+4. cd ..: move one step up or back.
+5. cd folder name: move to specific folder
+6. cd /: Move to root
+7. ls -a: Show all files(hidden also)
+8. ls -l: Show all files and also details of files (no. of links or directories inside this directory, the group that file belong, the date of the last notification, file/folder name, size of file and can be modified to display other size, the user that the file belongs to, everyone else privilege, group privilege, owner privilege. In privilege section of the owner there is a file drwxr is written, it means:                                        first letter is “-“ for file, d - directory, l- link, r- read, w- The file can be modified(write/delete/edit), x- execute.
+9. mkdir directoryName: Make a new directory
+10. rm -r directoryName (it is used when the directory is not empty. rm nameOfFile rmdir directoryName : delete
+11. touch f.txt: make a file
+12. code f.txt: Open file with an editor(vscode)
+13. cat f.txt: see content of a text file in the terminal
+14. less f.txt: This helps when you need to look inside a small file.to see larger file use. quit pressing ‘q’
+15. mv f.txt newName: Renaming a file.
+16. cp newName.txt copied.txt: Copy a file
+17. which fileName/foldername: locating a file/folder it outputs the path
+18. history: See what command you used upto 500
+19. sudo apt-get update: update Ubantu sudo means super user do
+20. ifconfig: See network information
+21. Ping google.com: ping a website
+22. uname -a: see own os information
+23. top: See system usage data
+24. df: See disk space
+25. sudo apt-get install Name: Install software
+26. sudo apt-get remove Name: Remove/Uninstall
+27. sudo reboot: Restart Computer
+28. sudo shutdown -h now sudo poweroff: Shutdown Computer : (try anyone)
+29. ls: Shows files/ directories in your current directory
+30. ls -R: Shows all the files not only in directories but also subdirectories ls -r: will give you an error These Linux basics commands are case- sensitive
+31. ls -al: Gives detailed information of the files in a columnar format
