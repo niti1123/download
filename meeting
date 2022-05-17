@@ -11,3 +11,17 @@ https://teams.microsoft.com/l/meetup-join/19%3ameeting_OWRhYmJiZTAtNGFjZi00ODZkL
 Q1..”it can query from the database as an apiuser” , what does this api user means , is authorised user type which I have to use to ssh into the server and same user to access the database or,  its a field which should be used as the query filter.
 
 Q2.To send the alerts what should be the trigger ? , if it’s the connection taking time to connect then how should we monitor trigger script?,  at each api call which performs operations on database or 24X7 monitoring like a cron job?
+
+
+Q1. there is a DB username = apiuser . your script when accessing the database needs to provide from configuration (DBHOST, DBUSER AND DBPASSWORD) the application uses DBUSER = apiuser (or you can use DBUSER = dmp)
+Q2: once yoou connect to the database you can run a query to check to see what running on mysql
+ here are some sample queries
+SELECT ID, USER, HOST, SUBSTRING_INDEX(HOST,':',1) AS MACHINE, SUBSTRING_INDEX(HOST,':',-1) AS MACHINE_PORT,DB, COMMAND, TIME, STATE, INFO, TIME_MS, ROWS_SENT, ROWS_EXAMINED FROM information_schema.PROCESSLIST p;
+
+SELECT ID, USER, HOST, SUBSTRING_INDEX(HOST,':',1) AS MACHINE, SUBSTRING_INDEX(HOST,':',-1) AS MACHINE_PORT,DB, COMMAND, TIME, STATE, INFO, TIME_MS, ROWS_SENT, ROWS_EXAMINED FROM information_schema.PROCESSLIST p WHERE USER="apiuser" and COMMAND="Sleep";
+
+trigger on a configurable amount of apiuser connections sleep or lock state.
+trigger/report on any processes that are in lock (metadata lock)
+
+
+cronjob should run every 6 hours for now
