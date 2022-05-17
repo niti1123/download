@@ -5,3 +5,9 @@ https://teams.microsoft.com/l/meetup-join/19%3ameeting_M2ZhM2RmOTktNjg4OC00MWZhL
 1. 7:00- 7:30 https://teams.microsoft.com/l/meetup-join/19%3ameeting_MWE0YjgyY2EtNjM0OS00NDk5LTgyYmEtZjE2NmE3NWRjZGJi%40thread.v2/0?context=%7b%22Tid%22%3a%220685d760-4332-4f24-b2ea-ffbbc2383f15%22%2c%22Oid%22%3a%22ff97f581-8de8-4c8f-b88c-44d997db2756%22%7d
 2. 9:00- 10:00 https://teams.microsoft.com/l/meetup-join/19%3ameeting_OWRhYmJiZTAtNGFjZi00ODZkLWI3MmMtODY1ZmZmODdjN2E3%40thread.v2/0?context=%7b%22Tid%22%3a%220685d760-4332-4f24-b2ea-ffbbc2383f15%22%2c%22Oid%22%3a%228b2a0331-78fa-4a3e-94c3-2818000a4ec7%22%7d
 https://teams.microsoft.com/l/meetup-join/19%3ameeting_OWRhYmJiZTAtNGFjZi00ODZkLWI3MmMtODY1ZmZmODdjN2E3%40thread.v2/0?context=%7b%22Tid%22%3a%220685d760-4332-4f24-b2ea-ffbbc2383f15%22%2c%22Oid%22%3a%228b2a0331-78fa-4a3e-94c3-2818000a4ec7%22%7d
+
+
+
+Q1..”it can query from the database as an apiuser” , what does this api user means , is authorised user type which I have to use to ssh into the server and same user to access the database or,  its a field which should be used as the query filter.
+
+Q2.To send the alerts what should be the trigger ? , if it’s the connection taking time to connect then how should we monitor trigger script?,  at each api call which performs operations on database or 24X7 monitoring like a cron job?
