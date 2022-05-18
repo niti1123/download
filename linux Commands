@@ -31,3 +31,6 @@ Linux Commands:
 29. ls: Shows files/ directories in your current directory
 30. ls -R: Shows all the files not only in directories but also subdirectories ls -r: will give you an error These Linux basics commands are case- sensitive
 31. ls -al: Gives detailed information of the files in a columnar format
+
+
+mysql.connector.errors.ProgrammingError: 1045 (28000): Access denied for user 'dmp@localhost'@'10.3.1.205' (using password: YES)
