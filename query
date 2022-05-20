@@ -1,0 +1,18 @@
+from
+    information_schema.processlist p1,
+    (select 
+        id, time
+    from
+        information_schema.processlist
+    where
+        time = (select 
+                max(time)
+            from
+                information_schema.processlist
+            where
+                state = 'Waiting for table metadata lock'
+                    and substring(info, 1, 5) in ('alter' , 'optim', 'repai', 'lock ', 'drop ', 'creat', 'trunc'))) p2
+where
+    p1.time >= p2.time
+        and p1.command in ('Sleep' , 'Query')
+        and p1.id not in (connection_id() , p2.id);
