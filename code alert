@@ -23,3 +23,24 @@ def send_slack_message(channel, message):
             else:
                 # other errors
                 raise e
+
+
+{
+"blocks": [
+{
+"type": "header",
+"text": {
+"type": "plain_text",
+"text": "This is a header block",
+"emoji": true
+}
+},
+{
+"type": "section",
+"text": {
+"type": "mrkdwn",
+"text": "Hello, Assistant to the Regional Manager Dwight! *Michael Scott* wants to know where you'd like to take the Paper Company investors to dinner tonight.\n\n *Please select a restaurant:*"
+}
+}
+]
+}
