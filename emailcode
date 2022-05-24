@@ -39,3 +39,35 @@ with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
     server.sendmail(
         sender_email, receiver_email, message.as_string()
     )
+
+
+
+new code:
+
+if __name__ == '__main__':
+    url = "https://hooks.slack.com/services/xxxxx/xxxxxx/xxxxxxx"
+    bot_name, emoji_id, hex_number = customizer()
+    message = ("A Sample Message")
+    title = (f"New Incoming Message {emoji_id}")
+    slack_data = {
+        "username": bot_name,
+        "icon_emoji": emoji_id,
+        "channel": "#random",
+        "attachments": [
+            {
+                "color": hex_number,
+                "fields": [
+                    {
+                        "title": title,
+                        "value": message,
+                        "short": "false",
+                    }
+                ]
+            }
+        ]
+    }
+    byte_length = str(sys.getsizeof(slack_data))
+    headers = {'Content-Type': "application/json", 'Content-Length': byte_length}
+    response = requests.post(url, data=json.dumps(slack_data), headers=headers)
+    if response.status_code != 200:
+        raise Exception(response.status_code, response.text)
