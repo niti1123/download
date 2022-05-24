@@ -1,0 +1,698 @@
+Old code: 
+
+#!/usr/bin/env python
+
+# Viet B. Le
+# 05/08/2020
+# A script that will manage/write uploaded CSV file(s) to a FIFO file.
+# 1. Expected input/argument:
+#   a. A directory containing the metadata and corresponding data file.
+#   b. A filename of the metadata file found in 1-a.
+#       i. Example:
+#           ./taxonomy_manager.py "/some/path/to/a/directory" "1eab4590deff176aae.metadata"
+# 2. Validate that arguments are appropriate:
+#   a. The metadata file from 1-b exist in the directory from 1-a.
+#   b. The metadata file also has a corresponding data file in the same directory (from 1-a).
+#       i. Example:
+#           |-> /some/path/to/a/directory/
+#                   |-> 1eab4590deff176aae.metadata
+#                   |-> 1eab4590deff176aae.data
+#          Note that both files have the same name, with the exception of the extension.
+# 3. Once valid write the FULL path of the DATA to a FIFO file.
+#   a. Check that the FIFO exists, if not create.
+#       i. Most likely if the FIFO does NOT exist, neither will the daemon that reads from it, make sure that it does and do checks via a PID exist scheme.
+#           *. If FIFO does NOT exist, create it.
+#           *. Check PID file that contains is empty/missing spawn daemon and write pid.
+
+import datetime
+import ast
+from decimal import Clamped
+import sys
+import errno
+import os
+import json
+import getopt
+import shutil
+try:
+    import pyclamd
+except Exception as e:
+    print("Need to pip install pyclamd in order to virus scan")
+
+from truoptikpy.utils.send_notification import SendNotification
+from truoptikpy.db.generic.db_repo_store import DBRepoStore
+
+# Scripts +  files.
+realPath            = os.path.realpath(__file__)    # Resolve symlinks/relative pathing.
+scriptPath          = os.path.dirname(realPath)     # Absolute path of this script location.
+scriptName          = os.path.basename(realPath)    # Just the script name.
+configurationFile   = "%s/taxonomy_manager.conf" % scriptPath
+pipeName            = "%s/taxonomy_fifo_pipe" % scriptPath
+
+# Variables.
+try:
+    clamd                           = pyclamd.ClamdAgnostic()
+except Exception as e:
+    print("clamd not installed can't do virus scans")
+    clamd = None
+processType                     = "tax"
+timestamp                       = int(datetime.datetime.utcnow().timestamp())                                           # UTC epoch time at execution of script.
+timestampHuman                  = datetime.datetime.utcfromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")           # UTC human-readable time at eecution of script; formatted YYYY-MM-DD hh:mm:ss.
+notificatitonObject             = SendNotification.get_instance()
+configurationDictionary         = {}
+
+# Get options.
+shortOpts   = ":hsv"
+longOpts    = ["help", "silent", "version"]
+sFlag       = False
+version     = "1.0.0"
+
+def main(argc, argv):
+    global sFlag
+
+    targetDirectory     = None
+    targetMetaList      = []
+    namedPipeHandler    = None
+
+    try:
+        options, arguments = getopt.getopt(argv[1:], shortOpts, longOpts)
+    except getopt.GetoptError as getOptError:
+        return "[!%s::main()::GetOpts] Failed to parse option(s).\n\t%s" % (scriptName, getOptError), 1
+
+    for opt, arg in options:
+        if( opt in ("-h", "--help" ) ):
+            print(  "USAGE:\n\t%s [OPTIONS] TARGET_DIRECTORY TARGET_METADATA\n\n" % scriptName,
+                    "\t\tScript that validates an uploaded taxonomy CSV and writes the full path to a named pipe (FIFO).\n\n",
+                    "OPTIONS:\n",
+                    "\t-h                   Print this menu and exit.\n\n",
+                    "\t-s                   Silent output.\n\n",
+                    "\t-v                   print the version.\n\n",
+                    "ARGUMENTS:\n",
+                    "\tTARGET_DIRECTORY     Directory containing the metadata file to validate.\n\n",
+                    "\tTARGET_METADATA      Name of the metadata file to process.\n\n",
+                    "NOTES:\n",
+                    "\t+ The 'TARGET_DIRECTORY' and 'TARGET_METADATA' arguments follow the same workflow as Tru Optik upload distribution system;\n",
+                    "\t  meaning within 'TARGET_DIRECTORY' is a metadata file (JSON format) that describes a data file with the EXACT same name\n",
+                    "\t\t- EXAMPLE:\n"
+                    "\t\t\t> %s /path/to/some/directory/ 23edaf7800eedb87e.metadata\n" % scriptName,
+                    "\t\t\t\t* Within the path '/path/to/some/directory/' the file '23edaf7800eedb87e.metadata' describes another file WITHIN THE SAME path\n",
+                    "\t\t\t\t  '23edaf7800eedb87e.data'.\n\n")
+            return "[%s::main()] Printed usage.\n" % scriptName, 0
+        elif( opt in ("-s", "--silent") ):
+            sFlag = True
+        elif( opt in ("-v", "--version") ):
+            print(version)
+            return "[%s::main()] Printed version.\n" % scriptName, 0
+
+    # Make sure that:
+    # a. There are at LEAST 2 arguments, if more than 2, ignore rest.
+    # b. The first argument is a valid directory.
+    # c. The second argument is a valid file IN the validated directory.
+    if( len(arguments) < 2 ):
+        return "[%s::main()] Missing arguments.\n" % scriptName, 1
+    elif( not os.path.isdir(arguments[0]) ):
+        return "[%s::main()] Invalid directory provided.\n" % scriptName, 1
+    else:
+        targetDirectory = os.path.realpath(arguments[0])
+
+        for metaFilename in arguments[1:]:
+            fullPath = "%s/%s" % (targetDirectory, metaFilename)
+            if( os.path.isfile(fullPath) ):
+                targetMetaList.append(fullPath)
+
+    metaFileCount = len(targetMetaList)
+    if( metaFileCount < 1 ):
+        return "[%s::main()] No valid meta file(s) provided in directory '%s'.\n" % (scriptName, targetDirectory), 1
+
+    # Read in configuration file.
+    message, result = load_configuration()
+    if( not result ):
+        return "[%s::main()] Failed to load configuration file '%s'.\n" % (scriptName, message), 1
+
+    # Check if the fifo exist, if not, create and open for writing.
+    try:
+        os.mkfifo(pipeName)
+    except OSError as e:
+        if( not e.errno == errno.EEXIST ):
+            return "[%s::main()] Failed to create missing named pipe (FIFO) '%s'.\n" % (scriptName, pipeName), 1
+
+    try:
+        namedPipeHandler = os.open(pipeName, os.O_WRONLY)
+    except Exception as e:
+        return "[%s::main] Failed to open FIFO %s for writing.\n" % (scriptName, pipeName)
+
+    # Validate by making sure that the corresponding data file(s) exist as well and write to named pipe file (FIFO).
+    processedCount = 0
+    for metaFilename in targetMetaList:
+        try:
+            with open(metaFilename, 'r') as data:
+                print("Reading Meta '%s'" % metaFilename)
+                metaDictionary = json.load(data)
+
+                # Get the job ID.
+                if( not "job_id" in metaDictionary ):
+                    print("no job")
+                    send_alert("[%s] Failed to queue taxonomy file." % (timestampHuman), "[%s::main] Missing key 'job_id' in metadata file '%s'.\n" % (scriptName, metaFilename))
+                    continue
+                elif( not "ak" in metaDictionary ):
+                    send_alert("[%s] Failed to queue taxonomy file." % (timestampHuman), "[%s::main] Missing key 'ak' in metadata file '%s'.\n" % (scriptName, metaFilename))
+                    continue
+
+                jobID = metaDictionary["job_id"]
+                ak = metaDictionary["ak"]
+                username = metaDictionary["upload_by"] if( "upload_by" in metaDictionary ) else "Unknown"
+                originalFilename = metaDictionary["filename"]
+                dataFile = "%s/%s.data" % (targetDirectory, jobID)
+                shareID =  metaDictionary["share_id"]
+
+                print("got job ID '%s' and ak '%s'" % (jobID, ak))
+
+                if( not os.path.isfile(dataFile) ):
+                    print("no file")
+                    send_alert("[%s] Failed to queue taxonomy file." % (timestampHuman), "[%s::main] Missing data file '%s'.\n" % (scriptName, dataFile))
+                    continue
+
+                print("data file exits '%s' scanning for viruses" % dataFile)
+                if clamd and clamd.ping():
+                    try:
+                        virus_scan_result=clamd.scan_file(dataFile)
+                    except Exception as e:
+                        print("Unable to scan files issue with clamd.scan_file")
+                        send_alert("[%s] Failed to virus scan taxonomy file." % (timestampHuman), "[%s::main] Issue with clamd '%s'.\n" % (scriptName, dataFile))
+                    else:
+                        # if virus not found then it will be none
+                        # if virus found then {'filename':('FOUND','Eicar-Test-Signature')}
+                        if virus_scan_result:
+                            send_alert("[%s] Virus detected in taxonomy file." % (timestampHuman), "[%s::main] Found virus (%s) in '%s'.\n" % (scriptName, virus_scan_result[dataFile][1],dataFile))
+                            continue
+                        else:
+                            send_alert("[%s] No virus found in taxonomy file." % (timestampHuman), "[%s::main] No virus '%s'.\n" % (scriptName, dataFile))
+
+
+                # Job ID is present and corresponding file exist, write to named pipe.
+                try:
+                    oFnameParts = originalFilename.split('.')
+                    extensionType = oFnameParts[-1]
+
+                    if( extensionType == "csv" ):
+                        extensionType = "CSV"
+                    elif( extensionType in ("xlsx", "xls") ):
+                        extensionType = "XLS"
+                    else:
+                        send_alert("[%s] Failed to queue taxonomy file." % (timestampHuman), "[%s::main] Failed to write metadata '%s' to queue '%s'.\n\tUnknown type '%s' (%s)\n" % (scriptName, metaFilename, pipeName, extensionType, originalFilename))
+                        continue
+
+                    entry = "%s/ %s.data %s %s %s %s\n" % (targetDirectory, jobID, ak, username, extensionType, shareID)
+                    os.write(namedPipeHandler, entry.encode("utf8"))
+                    print(entry)
+                except Exception as e:
+                    send_alert("[%s] Failed to queue taxonomy file." % (timestampHuman), "[%s::main] Failed to write metadata '%s' to queue '%s'.\n\t%s\n" % (scriptName, metaFilename, pipeName, e))
+                    continue
+        except Exception as e:
+            send_alert("[%s] Failed to queue taxonomy file." % (timestampHuman), "[%s::main] Failed to open metadata file '%s'.\n" % (scriptName, metaFilename))
+
+        processedCount += 1
+    os.close(namedPipeHandler)
+
+    if( processedCount == 0 ):
+        return "[%s::main] No file(s) in argument: '%s' were queued.\n" % (scriptName, ', '.join(argv)), 1
+
+    return "[%s::main()] Success, queued '%s'.\n" % (scriptName, ", ".join(arguments)), 0
+
+# Function to display messages to standard error.
+# Arguments:    <STRING> message    - Message to output to standard error.
+#               <STRING> lineEnd    - Ending character/string after each message.
+def say(message, lineEnd = ''):
+    if( not sFlag ):
+        print(message, end = lineEnd, file = sys.stderr)
+
+# Function to send an alert using Tru Optik's notification system.
+# Arguments:        String  alertSubject        Subject of the message.
+#                   String  alertMessage        The message to send.
+#                   Boolean alertVerbosity      True - Print the JSON message when sending alert.
+def send_alert(alertSubject, alertMessage, alertVerbosity = False):
+    alertAppName = processType
+
+    # If no configuration for alert is set, use default.
+    if( not configurationDictionary or not "alertProperties" in configurationDictionary ):
+        alertChannel        = "testnotifications"
+        alertRecipientList  = ["all"]
+        alertDeliveryMethod = "2"
+        alertTags           = "upload"
+    else:
+        alertChannel        = configurationDictionary["alertProperties"]["alertChannel"]
+        alertRecipientList  = configurationDictionary["alertProperties"]["alertRecipientList"]
+        alertDeliveryMethod = configurationDictionary["alertProperties"]["alertDeliveryMethod"]
+        alertTags           = configurationDictionary["alertProperties"]["alertTags"]
+
+    notificatitonObject.send(   subject     =   alertSubject,
+                                message     =   alertMessage,
+                                app         =   alertAppName,
+                                channel     =   alertChannel,
+                                to_send     =   alertRecipientList,
+                                deliverer   =   alertDeliveryMethod,
+                                tags        =   alertTags,
+                                verbose     =   alertVerbosity
+                            )
+
+def load_configuration():
+    global configurationDictionary
+
+    try:
+        with open(configurationFile, 'r') as configurationHandler:
+            configurationDictionary = ast.literal_eval(configurationHandler.read())
+    except EnvironmentError as err:
+        return "[!%s::load_configuration()] Failed to load configurations.\n\t%s" % (scriptName, err), False
+    except ValueError as valueError:
+        return "[!%s::load_configuration()] Failed to load configurations.\n\t%s" % (scriptName, valueError), False
+
+    if( not configurationDictionary ):
+        return "[!%s::load_configuration()] Configuration loaded but empty.\n" % scriptName, False
+
+    return "[~%s::load_configuration()] Loaded configuration.\n" % scriptName, True
+
+if( __name__ == "__main__" ):
+    try:
+        message, exitCode = main(len(sys.argv), sys.argv)
+    except Exception as e:
+        message = "[%s] Failed to execute.\n\t%s\n" % (scriptName, e)
+        exitCode = 1
+
+    send_alert("[%s] Taxonomy file Queue-ing." % (timestampHuman), "[%s::main] '%s' (%d).\n" % (scriptName, message, exitCode))
+    say(message)
+    sys.exit(exitCode)
+    
+    
+New Code: (one we have to change):
+
+#!/usr/bin/env python
+
+# Viet B. Le
+# Script to distribute uploaded file(s) from the Tru Optik upload endpoint to appropriate
+# folder(s).
+# 1. Expect arguments: <directory>, <metadata_file>.
+#   a. Where the '<directory>' is the path that contains '<metadata_file>'.
+#       i.  The metadata file is simply a JSON object, that describes the corresponding data file.
+#   b. Within the '<directory>' there is also another file with the same NAME as the '<metadata_file>', but with a different extension.
+#       i.  Example.
+#               Directory:      /Path/to/some/directory/
+#               Metadata File:  /Path/to/some/directory/fe15a04129ceed01.metadata
+#               Data File:      /Path/to/some/directory/fe15a04129ceed01.data
+# 2. This script will validate the '<metadata_file>' by:
+#   a. Load the metadata file as a JSON.
+#   b. Ensure that the metadata has a corresponding data file; refer to step #1-b-i.
+#   c. Determine its upload/application type; idr, cav, dmp, etc.
+# 3. Once validated:
+#   a. Make a symlink of the '<data>' file to the appropriate directory.
+#       i.      A symlink is made because a file may have a size of 512MB and a copy would be
+#               expensive.
+#       ii.     The appropriate directory being determined by the upload/application type.
+#       iii.    Example.
+#                   type == 'idr': /path/to/idr/folder/
+#                   type == 'dmp': /path/to/dmp/folder/
+#                   ...
+#                   type == '<XYZ>': /path/to/<XYZ>/folder/
+#   b. Make a copy of the '<metadata_file> to the same appropriate directory.
+#       i.      Small file, copy is OK and bypasses a superceded issue with inotfywait on NFS mounts.
+# 4. On success or failure, update database and send alert.
+
+import datetime
+import ast
+import sys
+import os
+import json
+import getopt
+import shutil
+from truoptikpy.utils.send_notification import SendNotification
+from truoptikpy.db.generic.db_repo_store import DBRepoStore
+
+# Scripts +  files.
+realPath            = os.path.realpath(__file__)    # Resolve symlinks/relative pathing.
+scriptPath          = os.path.dirname(realPath)     # Absolute path of this script location.
+scriptName          = os.path.basename(realPath)    # Just the script name.
+configurationFile   = "/truoptik/conf/core/applications/distributor/distribute.conf"
+
+# Variables.
+timestamp                       = int(datetime.datetime.utcnow().timestamp())                                           # UTC epoch time at execution of script.
+timestampHuman                  = datetime.datetime.utcfromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")           # UTC human-readable time at eecution of script; formatted YYYY-MM-DD hh:mm:ss.
+notificatitonObject             = SendNotification.get_instance()                                                       # Class object to push notification(s) to Slack.
+configurationDictionary         = None
+processType                     = "upload_distributor"
+sFlag = False
+
+def main(argc, argv):
+    targetDirectory = argv[1]
+    targetFile      = argv[2]
+    fullPath = "%s/%s" % (targetDirectory, targetFile)
+
+    if( not argc >= 2 ):
+        return "[%s::main()] Requires at two arguments; <directory> and <metadata_file>.\n" % scriptName, 1
+
+    # Check that the directory and metadata file exist.
+    if( not os.path.isdir(targetDirectory) ):
+        return "[%s::main()] Argument '%s' is not a valid directory.\n" % (scriptName, targetDirectory), 1
+    elif( not os.path.isfile(fullPath) ):
+        return "[%s::main()] Argument '%s' is not a valid file.\n" % (scriptName, fullPath), 1
+
+    # Read in configuration file.
+    message, result = load_configuration()
+    if( not result ):
+        return "[%s::main()] Failed to load configuration file '%s'.\n" % (scriptName, message), 1
+
+    message, databaseAdaptor = connect_database()
+    if( not databaseAdaptor ):
+        return "[!%s::main()] Failed to connect to database.\n\t%s" % (scriptName, message), 1
+
+    # Begin validating the data file.
+    try:
+        with open(fullPath, 'r') as data:
+            metaDictionary = json.load(data)
+
+            # Get the job ID, AK, and the job type.
+            if( not "job_id" in metaDictionary ):
+                return "[%s::main()] Metadata '%s' missing 'jobID' key.\n" % (scriptName, fullPath), 1
+            elif( not "ak" in metaDictionary ):
+                return "[%s::main()] Metadata '%s' missing 'AK' key.\n" % (scriptName, fullPath), 1
+            elif( not "job_type" in metaDictionary ):
+                return "[%s::main()] Metadata '%s' missing 'job_type' key.\n" % (scriptName, fullPath), 1
+
+            jobID = metaDictionary["job_id"]
+            ak = metaDictionary["ak"]
+            jobTypeList = metaDictionary["job_type"].split(',')
+
+            # Check that the corresponding DATA file exist.
+            dataPath = "%s/%s.data" % (argv[1], jobID)
+            if( not os.path.isfile(dataPath) ):
+                return "[%s;:main()] Unable to find corresponding data file '%s'.\n" % (scriptName, dataPath), 1
+
+            # Validate and make symlink(s) + copy of DATA and METADATA files to appropriate location(s) depending on liste type(s).
+            jobCount = 0
+            for jobType in jobTypeList:
+                if( not jobType in configurationDictionary["applicationPathDictionary"] ):
+                    send_alert("[%s] Upload Distribution Script" % (timestampHuman), "[%s::main()] Unknown application '%s' listed in '%s'.\n" % (scriptName, jobType, fullPath))
+                    continue
+                targetJobDirectory = "%s/%s/" % (configurationDictionary["applicationPathDictionary"][jobType], ak)
+                targetMetaPath = "%s/%s.metadata" % (targetJobDirectory, jobID)
+                targetDataPath = "%s/%s.data" % (targetJobDirectory, jobID)
+
+                if( not os.path.isdir(targetJobDirectory) ):
+                    try:
+                        os.makedirs(targetJobDirectory, exist_ok = True)
+                    except Exception as e:
+                        send_alert("[%s] Upload Distribution Script" % (timestampHuman), "[%s::main()] Failed to make directory '%s' for job '%s'.\n\t%s" % (scriptName, targetJobDirectory, fullPath, e))
+                        continue
+
+                try:
+                    os.symlink(dataPath, targetDataPath)
+                    shutil.copyfile(fullPath, targetMetaPath)
+                except Exception as e:
+                        send_alert("[%s] Upload Distribution Script" % (timestampHuman), "[%s::main()] Failed to move metadata and data files to appropriate directory.\n\t%s" % (scriptName, e))
+                        continue
+                jobCount += 1
+
+            if( jobCount == 0 ):
+                return "[%s::main()] Failed to distribute job '%s' from AK '%s' to any product(s) ['%s'], job count == 0.\n" % (scriptName, jobID, ak, "', '".join(jobTypeList)), 1
+
+
+            # Attempt to insert / update metadata in to a database.
+            message, result = meta_to_database(metaDictionary, databaseAdaptor)
+            if( not result ):
+                say("[~%s::main()] Failed to insert metadata '%s' into database '%s_%s.%s'.\n" % (scriptName, fullPath, configurationDictionary["database_configurations"]["host"], configurationDictionary["database_configurations"]["database"], configurationDictionary["database_configurations"]["tables"]["uploadTable"]))
+                send_alert( alertSubject = "NOTICE failed to insert/update database.",
+                    alertMessage = "[~%s::main()] Failed to insert/update database with job ID '%s'.\n\t%s\n" % (scriptName, metaDictionary["job_id"], message)
+                )
+            say("\t%s" % message)
+
+                #print("\n===========================")
+                #print("cp %s %s" % (fullPath, targetMetaPath))
+                #print("ln -s %s %s" % (dataPath, targetDataPath))
+                #print("\n===========================\n")
+                #jobCount += 1
+                #pass
+    except Exception as e:
+        return "[%s::main()] Failed to read metadata file '%s'.\n\t%s\n" % (scriptName, fullPath, e), 1
+
+    return "[%s::main()] Success; distributed job '%s' for AK '%s'.\n" % (scriptName, jobID, ak), 0
+
+
+# Function to display messages to standard error.
+# Arguments:    <STRING> message    - Message to output to standard error.
+#               <STRING> lineEnd    - Ending character/string after each message.
+def say(message, lineEnd = ''):
+    if( not sFlag ):
+        print(message, end = lineEnd, file = sys.stderr)
+
+# Function to send an alert using Tru Optik's notification system.
+# Arguments:        String  alertSubject        Subject of the message.
+#                   String  alertMessage        The message to send.
+#                   Boolean alertVerbosity      True - Print the JSON message when sending alert.
+def send_alert(alertSubject, alertMessage, alertVerbosity = False):
+    alertAppName = processType
+
+    # If no configuration for alert is set, use default.
+    if( not configurationDictionary or not "alertProperties" in configurationDictionary ):
+        alertChannel        = "testnotifications"
+        alertRecipientList  = ["all"]
+        alertDeliveryMethod = "2"
+        alertTags           = "upload"
+    else:
+        alertChannel        = configurationDictionary["alertProperties"]["alertChannel"]
+        alertRecipientList  = configurationDictionary["alertProperties"]["alertRecipientList"]
+        alertDeliveryMethod = configurationDictionary["alertProperties"]["alertDeliveryMethod"]
+        alertTags           = configurationDictionary["alertProperties"]["alertTags"]
+
+    notificatitonObject.send(   subject     =   alertSubject,
+                                message     =   alertMessage,
+                                app         =   alertAppName,
+                                channel     =   alertChannel,
+                                to_send     =   alertRecipientList,
+                                deliverer   =   alertDeliveryMethod,
+                                tags        =   alertTags,
+                                verbose     =   alertVerbosity
+                            )
+
+# Function to send metadata information to metadata status stable for IDR.
+# Arguments:        Dictionary          metadataDictionary  The dictionary to process.
+# Return:           String, Boolean     message, result     A message and true on success, fale otherwise.
+def meta_to_database(metadataDictionary, databaseAdaptor):
+    insertQueryPrefix   = "INSERT INTO %s.%s (`upload_by`, `type_list`, `ak`, `job_id`, `share_id`, `filename`, `status`, `error`, `headermap`, `delimiter`, `file_description`, `filesize`, `uploaded_on`) VALUES " % (configurationDictionary["database_configurations"]["database"], configurationDictionary["database_configurations"]["tables"]["uploadTable"])
+    insertQueryBody     = "('%s', '%s', '%s', '%s', %d, '%s', '%s', %d, %s, '%s', '%s', %d, '%s')" % (metadataDictionary["upload_by"], metadataDictionary["job_type"], metadataDictionary["ak"], metadataDictionary["job_id"], metadataDictionary["share_id"], metadataDictionary["filename"], metadataDictionary["status"], metadataDictionary["error"], json.dumps(json.dumps(metadataDictionary["header_mapping"])), metadataDictionary["delimiter"], metadataDictionary["file_description"], metadataDictionary["upload_stat"]["size_in_bytes"], timestampHuman)
+    insertQuerySuffix   = "ON DUPLICATE KEY UPDATE `filename` = VALUES(`filename`), `share_id` = VALUES(`share_id`), `status` = VALUES(`status`), `error` = VALUES(`error`), `headermap` = VALUES(`headermap`), `delimiter` = VALUES(`delimiter`), `file_description` = VALUES(`file_description`), `filesize` = VALUES(`filesize`);"
+
+    print("%s\n%s\n%s" % (insertQueryPrefix, insertQueryBody, insertQuerySuffix))
+    try:
+        insertQueryResult   = databaseAdaptor.insert("%s %s %s" % (insertQueryPrefix, insertQueryBody, insertQuerySuffix))
+    except Exception as insertError:
+        return "[!%s::meta_to_database()] Failed to insert/update.\n\t%s\n" % (scriptName, insertError), False
+
+    return "[!%s::meta_to_database()] Inserted/updated record for '%s' in '%s_%s.%s'.\n" % (scriptName, metadataDictionary["job_id"], configurationDictionary["database_configurations"]["host"], configurationDictionary["database_configurations"]["database"], configurationDictionary["database_configurations"]["tables"]["uploadTable"]), True
+
+# Function to connect to database set in a global configuration dictionary.
+# Return:       String, DBConnector     message, databaseAdapter    A message and the object for connecting to the database, None otherwise.
+def connect_database():
+    databaseAdapter = None
+    adapterPackage  = None
+    adapterClass    = None
+    adapterLog      = None
+    databaseStore   = None
+
+    # Check configuration for general setup of database configuration.
+    if( not configurationDictionary ):
+        return "[!%s::connect_database()] No configuration loaded.\n" % scriptName, databaseAdapter
+    elif( not "database_configurations" in configurationDictionary ):
+        return "[!%s::connect_database()] No database configuration (key: 'database_configurations') loaded.\n" % scriptName, databaseAdapter
+
+    if( not "package_name" in configurationDictionary["database_configurations"] ):
+        adapterPackage = "mysql_adapter"
+    else:
+        adapterPackage = configurationDictionary["database_configurations"]["package_name"]
+
+    if( not "class_name" in configurationDictionary["database_configurations"] ):
+        adapterClass = "MySQLAdapter"
+    else:
+        adapterClass = configurationDictionary["database_configurations"]["class_name"]
+
+    if( not "log_name" in configurationDictionary["database_configurations"] ):
+        adapterLog = "test"
+    else:
+        adapterLog = configurationDictionary["database_configurations"]["log_name"]
+
+    # General configuration passed, create adaptor.
+    databaseStore = DBRepoStore()
+    databaseAdapter = databaseStore.create_db_adapter(adapterPackage, adapterClass, adapterLog)
+    databaseAdapter.open_connection(configurationDictionary["database_configurations"])
+
+    return "[~%s::connect_database()] Successfully created database connection.\n" % scriptName, databaseAdapter
+
+def load_configuration():
+    global configurationDictionary
+
+    try:
+        with open(configurationFile, 'r') as configurationHandler:
+            configurationDictionary = ast.literal_eval(configurationHandler.read())
+    except EnvironmentError as err:
+        return "[!%s::load_configuration()] Failed to load configurations.\n\t%s" % (scriptName, err), False
+    except ValueError as valueError:
+        return "[!%s::load_configuration()] Failed to load configurations.\n\t%s" % (scriptName, valueError), False
+
+    if( not configurationDictionary ):
+        return "[!%s::load_configuration()] Configuration loaded but empty.\n" % scriptName, False
+    elif( not configurationDictionary["applicationPathDictionary"] ):
+        return "[!%s::load_configuration()] Configuration missing 'applicationPathDictionary' dictionary.\n" % scriptName, False
+
+    return "[~%s::load_configuration()] Loaded configuration.\n" % scriptName, True
+
+if( __name__ == "__main__" ):
+    try:
+        message, exitCode = main(len(sys.argv), sys.argv)
+    except Exception as e:
+        message = "[!%s] ERROR: Failed to execute; %s\n" % (scriptName, e)
+        exitCode = 1
+
+    send_alert("[%s] Upload Distribution Script" % (timestampHuman), "%s (%d)" % (message, exitCode))
+#alertVerbosity = False)
+    say(message)
+    #sys.exit(exitCode)
+
+
+
+Task:
+
+
+[6] Check uploaded files for Viruses/Malware, delete if found ISS-0439002
+
+Wait, Linux needs antivirus and anti-malware solutions? I thought it was immune to such things. Perhaps a bit of clarification is necessary here. First and foremost, no operating system is 100 percent immune to attack. Whether a machine is online or offline, it can fall victim to malicious code. Although Linux is less prone to …
+
+Sep 22nd, 2017 (183 kB)
+
+Greetings niti
+
+clamav is installed on compute1dev-dmp-ny2.eqx.grid
+
+
+
+here are some notes:
+
+Info: https://www.linuxcapable.com/how-to-install-and-use-clamav-on-ubuntu-20-04/
+
+
+
+Security Advisories
+https://www.cvedetails.com/vulnerability-list/vendor_id-8871/Clamav.html
+https://blog.clamav.net/2022/01/clamav-01035-and-01042-security-patch.html
+Installation
+https://docs.clamav.net/manual/Installing/Installing-from-source-Unix.html#ubuntu--debian
+Testing
+compute1dev
+logfile: /var/log/clamav/clamav.log
+
+you need to modify the following script similar to 
+http://gitlab.aws.grid/subsystems/adtech_dmp/-/compare/develop_v3...US543175_emerson?from_project_id=90
+
+
+
+* this assumes clamav is installed you should have check for this on the system
+
+* this assumes that python module pyclamd is in the virtualenv of ths script that will call it (or you can choose to make it a standalone script, that when invoked will source the correct venv
+
+you want to make your modifications to this file adtech_dmp/tools/upload_watcher/distributor/distribute.py
+which will distribute the uploaded file to the appropriate directory when an upload is received before doing this we could do scan on the file for viruses
+and then let the script continue or create an alert and quarantine the file.
+
+
+
+@Viet Le is a good point of reference regarding this process
+
+Old notes:
+
+To install clamav on ubuntu
+
+https://linuxhint.com/install_clamav_ubuntu/
+
+
+
+additional info:
+
+https://docs.clamav.net/manual/Installing/Packages.html
+
+
+
+This was installed on emerson-02-ny2.eqx.grid
+
+
+
+running the command line tools
+
+
+ clamscan  --infected  goodfile.txt
+
+There are python wrappers (e.g. pycland)
+
+To install pyclamd 
+
+pip install pyclamd
+>>> import pyclamd
+>>> cd = pyclamd.ClamdAgnostic()
+>>> cd.ping()
+True
+>>> print(cd.version().split()[0])
+ClamAV
+>>> print(cd.reload())
+RELOADING
+>>> print(cd.stats().split()[0])
+POOLS:
+>>> void = open('/tmp/EICAR','w').write(cd.EICAR())
+>>> void = open('/tmp/NO_EICAR','w').write('no virus in this file')
+>>> cd.scan_file('/tmp/EICAR')
+{'/tmp/EICAR': ('FOUND', 'Eicar-Test-Signature')}
+>>> cd.scan_file('/tmp/NO_EICAR') is None
+True
+>>> cd.scan_stream(cd.EICAR())
+{'stream': ('FOUND', 'Eicar-Test-Signature')}
+
+
+
+When we ran command line scan of a test file
+
+it took
+
+Infected files: 1
+Data scanned: 0.00 MB
+Data read: 0.00 MB (ratio 0.00:1)
+Time: 28.575 sec (0 m 28 s)
+Start Date: 2022:02:11 01:02:41
+End Date:   2022:02:11 01:03:09
+
+real    0m28.598s
+user    0m24.969s
+sys     0m3.621s
+
+The concerns are
+
+How long would it take to scan a 1M or 1G file or large directory to determine if there is an infection
+we need to run a test on sample data to get real life time estimates
+How often do we need to refresh the infection database (info)
+we may need to do this on a weekly basis
+How can this be used
+Data Market place upload component
+/truoptik/www/storage/tax/ directory can monitor for new files
+
+the upload_processing can add a system call or use python wrapper module to scan recently uploaded file
+
+Onboarding Servers
+
+Jaguar dir could be possibly place to scan
+
+Sync Servers / Compute
+
+maxmind download
+
+
+
+IN parallel look for other alternatives
+
+
+
+
+
+
+
