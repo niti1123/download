@@ -117,3 +117,22 @@ def some_job():
 scheduler = BlockingScheduler()
 scheduler.add_job(some_job, 'interval', hours=1)
 scheduler.start()
+
+
+new code:
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import smtplib
+msg = MIMEMultipart()
+msg["From"] = "<your_mail_account>"
+msg["To"] = "<destiny_account>"
+body_text = "HOLA MUNDO :)"
+body_part = MIMEText(body_text, 'plain')
+msg.attach(body_part)
+with smtplib.SMTP(host="smtp.<CUSTOM_DOMAIN>.com", port=587) as smtp_obj:  # ENVIAR DESDE UN DOMINIO PERSONALIZADO.
+    smtp_obj.ehlo()
+    smtp_obj.starttls()
+    smtp_obj.ehlo()
+    smtp_obj.login("<your_mail_account>", "<your_password>")
+    smtp_obj.sendmail(msg['From'], [msg['To'],], msg.as_string())
+print("¡Datos enviados con éxito!")
