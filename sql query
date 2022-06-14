@@ -1,0 +1,12 @@
+SET SQL SAFE UPDATES
+0:
+SET ename_change_ak - "d£56ec75ca0d7£a4
+SET ênew_name - "Neustar - AdAdvisor
+UPDATE 21analytics _truoptik_ dmp.21_pixels sET name-ênew _ name WHERE dmp_key _ full-lname _change_ak;
+UPDATE to_taxman.mktpl_ buyers SET company-€ new_ name wHERE ak-tname _change_ ak;
+UPDATE to_ taxman.mktp1_ providers sET provider_ name-ênew_ name WHERE ak-fname_changè_ak;
+UPDATE to_ taxman.onboarding_ segments sET company-new _ name WHERE dmp_key _ full-€ name change ak;
+UPDATE 21social_ truoptik_ amp.to_ source_provider_ information sET provider_ name-@new _ name WHERE ak-(name_change ak;
+UPDATE 21social_ truoptik_ amp.to_segment_ destination_type SET dest_owner-fnew _ name WHERE ak-fname_change_ak;
+SET SQL_ SAFE_UPDATES
+1:
