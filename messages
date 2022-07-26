@@ -1,0 +1,12 @@
+rajesh
+Hi Niti,
+If we separate it like below, we would still have the below issues:
+It will still be an object like variable, isn’t it ? The highlighted part below, are all object like variables - meaning, it cannot be passed directly as an object and needs to be passed as a stringified param from Node.js. This is why we discussed in yesterday’s meeting, that you should actually take the stringified param from Node.js and convert it into Object (/dictionary) at your end. At least for the specific variables below and a few more :
+<td>Price Structure</td>
+<td>{{price_details.target_device_type_id}}</td>
+<td>Price Structure</td>
+<td>{{price_details.price}}</td>
+<td>Price Structure</td>
+<td>{{price_details.target_device_type}}</td>
+2. We cannot iterate over multiple sub-objects in this way.Let’s say I have 3 price details in one instance and 5 price details in one instance. There should be one template that can handle both scenarios, right ? If we hardcode it like this, we can cover only one basic scenario.
+Please discuss on these points with Emerson as well
